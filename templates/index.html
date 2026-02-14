@@ -1,0 +1,371 @@
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>ARIMA-SARIMA Forecast & Anomaly Dashboard</title>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                background: #f4f6f9;
+                margin: 0;
+                padding: 0;
+            }
+
+            .container {
+                width: 85%;
+                max-width: 1100px;
+                margin: 40px auto;
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0px 4px 20px rgba(0,0,0,0.1);
+                text-align: center;
+            }
+
+            select, input[type="text"], input[type="file"] {
+                padding: 6px;
+                margin: 5px;
+            }
+
+            input[type="range"] { width: 200px; }
+
+            button {
+                padding: 10px 20px;
+                background: #007bff;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+
+            button:hover { background: #0056b3; }
+
+            .metrics { margin-top: 20px; font-weight: bold; }
+
+            .chart-container {
+                width: 80%;
+                margin: 30px auto;
+            }
+
+            #errorMessage {
+                color: red;
+                margin-top: 10px;
+            }
+        </style>
+    </head>
+
+    <body>
+
+    <div class="container">
+
+        <h1>📊 ARIMA-SARIMA Forecast & Anomaly Dashboard</h1>
+
+        <form id="uploadForm">
+
+            <label>Data Source:</label>
+            <select id="data_source">
+                <option value="file">Upload CSV</option>
+                <option value="angel">Angel One API</option>
+            </select>
+            <br>
+
+            <input type="file" id="fileInput">
+            <input type="text" id="symbol_token" name="symbol_token" placeholder="Enter tokens separated by comma">
+
+            <br><br>
+
+            <label>Model:</label>
+            <select id="model_type">
+                <option value="AUTO">AUTO (Best Model)</option>
+                <option value="ARIMA">ARIMA</option>
+                <option value="SARIMA">SARIMA</option>
+            </select>
+
+            <br><br>
+
+            <label>Threshold Multiplier:</label>
+            <input type="range" id="threshold" min="0.5" max="3" step="0.1" value="1.5">
+            <span id="thresholdValue">1.5</span>
+
+            <br><br>
+
+            <button type="submit">Run Analysis</button>
+
+            <div id="errorMessage"></div>
+
+        </form>
+
+        <h2 id="anomalyCount">Total Anomalies Detected: 0</h2>
+
+        <div class="metrics">
+        <h3 id="metrics"></h3>
+        <h3 id="modelInfo"></h3>
+        <h3 id="signalInfo"></h3>
+    </div>
+
+
+        <div class="chart-container">
+            <canvas id="chart"></canvas>
+        </div>
+        <hr>
+
+<h2>Multi-Asset Portfolio (CSV)</h2>
+
+<form id="multiForm">
+    <input type="file" id="multiFileInput">
+    <button type="submit">Run Portfolio Analysis</button>
+</form>
+
+<div id="portfolioResults" style="margin-top:20px; font-weight:bold;"></div>
+<div style="width:80%; margin:30px auto;">
+    <canvas id="portfolioChart"></canvas>
+</div>
+
+    </div>
+
+    <script>
+
+    let chartInstance = null;
+
+    const slider = document.getElementById("threshold");
+    const thresholdValue = document.getElementById("thresholdValue");
+    const errorMessage = document.getElementById("errorMessage");
+
+    slider.oninput = function() {
+        thresholdValue.innerText = this.value;
+    };
+
+    document.getElementById("uploadForm").onsubmit = async function(e) {
+        e.preventDefault();
+
+        errorMessage.innerText = "";
+
+        const formData = new FormData();
+
+        const dataSource = document.getElementById("data_source").value;
+        const modelType = document.getElementById("model_type").value;
+        const fileInput = document.getElementById("fileInput");
+        const symbolToken = document.getElementById("symbol_token").value;
+
+        formData.append("data_source", dataSource);
+        formData.append("model_type", modelType);
+        formData.append("threshold", slider.value);
+
+        if (dataSource === "file") {
+            if (!fileInput.files[0]) {
+                errorMessage.innerText = "Please upload a CSV file.";
+                return;
+            }
+            formData.append("file", fileInput.files[0]);
+        }
+
+        if (dataSource === "angel") {
+            if (!symbolToken) {
+                errorMessage.innerText = "Please enter symbol token.";
+                return;
+            }
+            formData.append("symbol_token", symbolToken);
+        }
+
+        const response = await fetch("/predict", {
+            method: "POST",
+            body: formData
+        });
+
+        const data = await response.json();
+
+        if (data.error) {
+            errorMessage.innerText = data.error;
+            return;
+        }
+
+        document.getElementById("anomalyCount").innerText =
+            "Total Anomalies Detected: " + data.anomaly_count;
+
+        document.getElementById("metrics").innerText =
+            "MAE: " + data.mae.toFixed(2) +
+            " | RMSE: " + data.rmse.toFixed(2);
+
+        document.getElementById("signalInfo").innerText =
+        "Signal: " + data.signal +
+        " | Expected Return: " + data.expected_return + "%" +
+        " | Confidence Score: " + data.confidence_score;
+
+        document.getElementById("modelInfo").innerText =
+        "Total Return: " + data.strategy_total_return + "%" +
+        " | Annualized: " + data.strategy_annualized_return + "%" +
+        " | Sharpe: " + data.strategy_sharpe_ratio +
+        " | Win Rate: " + data.strategy_win_rate + "%" +
+        " | Max DD: " + data.strategy_max_drawdown + "%" +
+        " | Buy & Hold: " + data.buy_hold_return + "%";
+
+        const ctx = document.getElementById("chart").getContext("2d");
+
+        if (chartInstance) chartInstance.destroy();
+
+        const forecastLength = data.forecast.length;
+        const actualLength = data.actual.length;
+        const totalLength = actualLength + forecastLength;
+
+        const labels = Array.from({ length: totalLength }, (_, i) => i);
+
+        const paddedActual = [...data.actual, ...Array(forecastLength).fill(null)];
+        const paddedPredicted = [...data.predicted, ...Array(forecastLength).fill(null)];
+        const paddedForecast = [...Array(actualLength).fill(null), ...data.forecast];
+        const paddedLower = [...Array(actualLength).fill(null), ...data.lower_ci];
+        const paddedUpper = [...Array(actualLength).fill(null), ...data.upper_ci];
+        const paddedAnomalies = [...data.anomaly_points, ...Array(forecastLength).fill(null)];
+
+        chartInstance = new Chart(ctx, {
+            type: "line",
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: "Actual",
+                        data: paddedActual,
+                        borderColor: "blue",
+                        fill: false
+                    },
+                    {
+                        label: "Predicted",
+                        data: paddedPredicted,
+                        borderColor: "green",
+                        fill: false
+                    },
+                    {
+                        label: "Upper CI",
+                        data: paddedUpper,
+                        borderColor: "rgba(128,0,128,0.2)",
+                        backgroundColor: "rgba(128,0,128,0.1)",
+                        fill: false
+                    },
+                    {
+                        label: "Lower CI",
+                        data: paddedLower,
+                        borderColor: "rgba(128,0,128,0.2)",
+                        backgroundColor: "rgba(128,0,128,0.1)",
+                        fill: "-1"
+                    },
+                    {
+                        label: "Forecast",
+                        data: paddedForecast,
+                        borderColor: "purple",
+                        borderDash: [6,6],
+                        fill: false
+                    },
+                    {
+                        label: "Anomalies",
+                        data: paddedAnomalies,
+                        borderColor: "red",
+                        backgroundColor: "red",
+                        pointRadius: 6,
+                        showLine: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) {
+                                if (value >= 1000000) return (value / 1000000) + "M";
+                                if (value >= 1000) return (value / 1000) + "K";
+                                return value;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+    };
+    document.getElementById("multiForm").onsubmit = async function(e) {
+    e.preventDefault();
+
+    const fileInput = document.getElementById("multiFileInput");
+
+    if (!fileInput.files[0]) {
+        alert("Upload multi-asset CSV.");
+        return;
+    }
+
+    const formData = new FormData();
+formData.append("file", fileInput.files[0]);
+
+let data;
+
+try {
+    const response = await fetch("/predict_multi_csv", {
+        method: "POST",
+        body: formData
+    });
+
+    if (!response.ok) {
+        throw new Error("Server returned " + response.status);
+    }
+
+    data = await response.json();
+
+} catch (err) {
+    console.error("Portfolio request failed:", err);
+    alert("Server error. Check console.");
+    return;
+}
+
+if (data.error) {
+    alert(data.error);
+    return;
+}
+
+    let text =
+        "Portfolio Return: " + data.portfolio_total_return + "%" +
+        " | Sharpe: " + data.portfolio_sharpe +
+        " | Max DD: " + data.portfolio_max_drawdown + "%\n\n";
+
+    for (const asset in data.assets) {
+        const a = data.assets[asset];
+        text += asset +
+            " → Return: " + a.total_return +
+            " | Sharpe: " + a.sharpe_ratio + "\n";
+    }
+
+    document.getElementById("portfolioResults").innerText = text;
+    // ----- Portfolio Equity Chart -----
+if (data.portfolio_equity_curve) {
+
+    const ctx2 = document.getElementById("portfolioChart").getContext("2d");
+
+    if (window.portfolioChartInstance)
+        window.portfolioChartInstance.destroy();
+
+    window.portfolioChartInstance = new Chart(ctx2, {
+        type: "line",
+        data: {
+            labels: Array.from(
+                {length: data.portfolio_equity_curve.length},
+                (_, i) => i
+            ),
+            datasets: [{
+                label: "Portfolio Equity",
+                data: data.portfolio_equity_curve,
+                borderColor: "black",
+                fill: false
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true
+        }
+    });
+}
+};
+
+    </script>
+
+    </body>
+    </html>
