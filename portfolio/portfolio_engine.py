@@ -6,7 +6,6 @@ from model.strategy.strategy import simulate_strategy
 from model.backtest.backtest import rolling_backtest
 from model.forecasting.arima_model import run_arima
 
-
 # -----------------------------
 # Helper: Safe JSON conversion
 # -----------------------------
@@ -18,7 +17,6 @@ def sanitize(value):
             return 0.0
         return float(value)
     return float(value)
-
 
 # -----------------------------
 # MAIN MULTI-ASSET ENGINE
@@ -35,6 +33,20 @@ def run_portfolio_from_csv(file):
     portfolio_equity = None
 
     asset_columns = df.columns[1:]
+    # ---------------------------------
+    # Correlation Filter (Diversification Control)
+    # ---------------------------------
+    corr_matrix = df[asset_columns].corr()
+    filtered_assets=[]
+    for col in asset_columns:
+        keep = True
+        for selected in filtered_assets:
+            if abs(corr_matrix.loc[col,selected]) > 0.85:
+                keep= False
+                break
+        if keep:
+            filtered_assets.append(col)
+    asset_columns = filtered_assets
 
     asset_vols = {}
     valid_series = {}
@@ -89,7 +101,6 @@ def run_portfolio_from_csv(file):
 
         split = int(len(series) * 0.8)
 
-        # full HOLD signal array
         signals = ["HOLD"] * (len(series) - 1)
 
         max_len = min(len(rolling_preds), len(series) - split - 1)
@@ -111,7 +122,7 @@ def run_portfolio_from_csv(file):
         if len(raw_equity) == 0:
             continue
 
-        # Normalize equity to 1
+        # Normalize each asset to 1
         normalized_equity = raw_equity / raw_equity[0]
 
         allocated_capital = total_capital * weights[col]
@@ -120,9 +131,9 @@ def run_portfolio_from_csv(file):
 
         asset_results[col] = {
             "weight": round(weights[col], 3),
-            "total_return": sanitize(result["total_return"]),
-            "sharpe_ratio": sanitize(result["sharpe_ratio"]),
-            "max_drawdown": sanitize(result["max_drawdown"])
+            "total_return": round(sanitize(result["total_return"]), 2),
+            "sharpe_ratio": round(sanitize(result["sharpe_ratio"]), 2),
+            "max_drawdown": round(sanitize(result["max_drawdown"]), 2)
         }
 
         if portfolio_equity is None:
@@ -138,22 +149,43 @@ def run_portfolio_from_csv(file):
         return {"error": "No valid assets processed."}
 
     # ---------------------------------
-    # 4️⃣ Portfolio Metrics
+    # Use Log Returns (Institutional)
+    # ---------------------------------
+    portfolio_returns = np.diff(np.log(portfolio_equity))
+
+    # ---------------------------------
+    # Volatility Targeting (20% annual)
+    # ---------------------------------
+    portfolio_vol = np.std(portfolio_returns) * np.sqrt(252)
+    target_vol = 0.20  # 20% annualized
+    if portfolio_vol > 0:
+        scaling_factor = target_vol / portfolio_vol
+    else:
+        scaling_factor = 1
+    portfolio_equity = portfolio_equity * scaling_factor
+
+    # ---------------------------------
+    # Recalculate Log Returns After Scaling
+    # ---------------------------------
+    portfolio_returns = np.diff(np.log(portfolio_equity))
+
+    # ---------------------------------
+    # Portfolio Metrics
     # ---------------------------------
     portfolio_total_return = (
-        (portfolio_equity[-1] - total_capital) / total_capital
+        (portfolio_equity[-1] - portfolio_equity[0]) / portfolio_equity[0]
     ) * 100
 
-    portfolio_returns = np.diff(portfolio_equity) / portfolio_equity[:-1]
-
-    if len(portfolio_returns) > 1 and np.std(portfolio_returns) != 0:
+    # Minimum sample protection
+    if len(portfolio_returns) < 20:
+        portfolio_sharpe = 0
+    elif np.std(portfolio_returns) != 0:
         portfolio_sharpe = (
             np.mean(portfolio_returns) /
             np.std(portfolio_returns)
         ) * np.sqrt(252)
     else:
         portfolio_sharpe = 0
-
     portfolio_max_drawdown = (
         np.min(
             portfolio_equity /
@@ -161,12 +193,22 @@ def run_portfolio_from_csv(file):
         ) * 100
     )
 
-    clean_equity = [sanitize(x) for x in portfolio_equity]
+    # ---------------------------------
+    # 5️⃣ Normalize Portfolio to Start at 100
+    # ---------------------------------
+    normalized_portfolio_equity = (
+        portfolio_equity / portfolio_equity[0]
+    ) * 100
+
+    clean_equity = [
+        round(sanitize(x), 2)
+        for x in normalized_portfolio_equity
+    ]
 
     return {
         "assets": asset_results,
-        "portfolio_total_return": sanitize(portfolio_total_return),
-        "portfolio_sharpe": sanitize(portfolio_sharpe),
-        "portfolio_max_drawdown": sanitize(portfolio_max_drawdown),
+        "portfolio_total_return": round(sanitize(portfolio_total_return), 2),
+        "portfolio_sharpe": round(sanitize(portfolio_sharpe), 2),
+        "portfolio_max_drawdown": round(sanitize(portfolio_max_drawdown), 2),
         "portfolio_equity_curve": clean_equity
     }
