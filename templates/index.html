@@ -59,7 +59,7 @@
 
     <div class="container">
 
-        <h1>📊 ARIMA-SARIMA Forecast & Anomaly Dashboard</h1>
+        <h1>ARIMA-SARIMA Forecast & Anomaly Dashboard</h1>
 
         <form id="uploadForm">
 
@@ -328,11 +328,20 @@ if (data.error) {
         " | Max DD: " + data.portfolio_max_drawdown + "%\n\n";
 
     for (const asset in data.assets) {
-        const a = data.assets[asset];
-        text += asset +
-            " → Return: " + a.total_return +
-            " | Sharpe: " + a.sharpe_ratio + "\n";
+
+    const a = data.assets[asset];
+
+    let weightText = "";
+
+    if (data.weights && data.weights[asset] !== undefined) {
+        weightText = " | Weight: " + data.weights[asset] + "%";
     }
+
+    text += asset +
+        " → Return: " + a.total_return +
+        "% | Sharpe: " + a.sharpe_ratio +
+        weightText + "\n";
+}
 
     document.getElementById("portfolioResults").innerText = text;
     // ----- Portfolio Equity Chart -----
@@ -343,19 +352,43 @@ if (data.portfolio_equity_curve) {
     if (window.portfolioChartInstance)
         window.portfolioChartInstance.destroy();
 
+    const historical = data.portfolio_equity_curve;
+    const forecast = data.portfolio_forecast_curve || [];
+
+    const totalLength = historical.length + forecast.length;
+
+    const labels = Array.from({ length: totalLength }, (_, i) => i);
+
+    const paddedHistorical = [
+        ...historical,
+        ...Array(forecast.length).fill(null)
+    ];
+
+    const paddedForecast = [
+        ...Array(historical.length - 1).fill(null),
+        historical[historical.length - 1],
+        ...forecast
+    ];
+
     window.portfolioChartInstance = new Chart(ctx2, {
         type: "line",
         data: {
-            labels: Array.from(
-                {length: data.portfolio_equity_curve.length},
-                (_, i) => i
-            ),
-            datasets: [{
-                label: "Portfolio Equity",
-                data: data.portfolio_equity_curve,
-                borderColor: "black",
-                fill: false
-            }]
+            labels: labels,
+            datasets: [
+                {
+                    label: "Portfolio Equity",
+                    data: paddedHistorical,
+                    borderColor: "black",
+                    fill: false
+                },
+                {
+                    label: "Portfolio Forecast",
+                    data: paddedForecast,
+                    borderColor: "purple",
+                    borderDash: [6,6],
+                    fill: false
+                }
+            ]
         },
         options: {
             responsive: true,

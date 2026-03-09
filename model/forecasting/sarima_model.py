@@ -3,7 +3,7 @@ from statsmodels.stats.diagnostic import acorr_ljungbox
 import numpy as np
 
 
-def run_sarima(data, forecast_steps=10):
+def run_sarima(data, forecast_steps=5):
 
     # Default safe values
     aic = 0.0

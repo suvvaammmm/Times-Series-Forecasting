@@ -66,7 +66,7 @@ def rolling_backtest(series, model_func, test_size=0.2):
 
         try:
             forecast, _, _, _, _, _ = model_func(train)
-            pred_next = forecast.iloc[0]
+            pred_next = forecast[0]
 
             predictions.append(pred_next)
             actuals.append(next_price)

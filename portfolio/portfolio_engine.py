@@ -1,14 +1,9 @@
 import numpy as np
 import pandas as pd
 import math
+from statsmodels.tsa.arima.model import ARIMA
 
-from model.strategy.strategy import simulate_strategy
-from model.backtest.backtest import rolling_backtest
-from model.forecasting.arima_model import run_arima
 
-# -----------------------------
-# Helper: Safe JSON conversion
-# -----------------------------
 def sanitize(value):
     if value is None:
         return 0.0
@@ -18,197 +13,170 @@ def sanitize(value):
         return float(value)
     return float(value)
 
-# -----------------------------
-# MAIN MULTI-ASSET ENGINE
-# -----------------------------
+
 def run_portfolio_from_csv(file):
 
+    # ---------------------------------
+    # Load Data
+    # ---------------------------------
     df = pd.read_csv(file)
 
     if df.shape[1] < 2:
         return {"error": "CSV must contain multiple asset columns."}
 
     total_capital = 100000
-    asset_results = {}
-    portfolio_equity = None
-
     asset_columns = df.columns[1:]
+
+    df[asset_columns] = df[asset_columns].apply(
+        pd.to_numeric, errors="coerce"
+    )
+
+    df = df.dropna()
+
+    if len(df) < 30:
+        return {"error": "Not enough data points."}
+
     # ---------------------------------
-    # Correlation Filter (Diversification Control)
+    # Compute Returns
     # ---------------------------------
-    corr_matrix = df[asset_columns].corr()
-    filtered_assets=[]
+    returns_df = df[asset_columns].pct_change().dropna()
+
+    if returns_df.empty:
+        return {"error": "Return matrix empty."}
+
+    # ---------------------------------
+    # Inverse Volatility Weights
+    # ---------------------------------
+    vol = returns_df.std().replace(0, 1e-6)
+    inv_vol = 1 / vol
+    weights = inv_vol / inv_vol.sum()
+
+    # ---------------------------------
+    # Portfolio Historical Returns
+    # ---------------------------------
+    portfolio_returns = returns_df.dot(weights)
+
+    portfolio_equity = total_capital * (1 + portfolio_returns).cumprod()
+
+    # ---------------------------------
+    # RETURN-BASED FORECAST
+    # ---------------------------------
+    forecast_horizon = 7
+    portfolio_future_returns = np.zeros(forecast_horizon)
+
     for col in asset_columns:
-        keep = True
-        for selected in filtered_assets:
-            if abs(corr_matrix.loc[col,selected]) > 0.85:
-                keep= False
-                break
-        if keep:
-            filtered_assets.append(col)
-    asset_columns = filtered_assets
 
-    asset_vols = {}
-    valid_series = {}
+        series = df[col].astype(float)
+        asset_returns = series.pct_change().dropna()
 
-    # ---------------------------------
-    # 1️⃣ Validate Assets + Volatility
-    # ---------------------------------
-    for col in asset_columns:
-
-        series = pd.to_numeric(df[col], errors="coerce").dropna()
-
-        if len(series) < 30:
+        if len(asset_returns) < 20:
             continue
 
-        returns = series.pct_change().dropna()
+        try:
+            model = ARIMA(asset_returns, order=(1, 0, 1))
+            result = model.fit()
 
-        if len(returns) < 10:
+            forecast_ret = result.forecast(steps=forecast_horizon)
+
+            portfolio_future_returns += forecast_ret.values * weights[col]
+
+        except:
             continue
 
-        vol = returns.rolling(10).std().iloc[-1]
+    # Extend Equity Forward
+    initial_equity = float(portfolio_equity.iloc[0])
+    last_equity = float(portfolio_equity.iloc[-1])
 
-        if vol is None or vol == 0 or np.isnan(vol):
-            continue
+    future_equity = []
 
-        asset_vols[col] = float(vol)
-        valid_series[col] = series.reset_index(drop=True)
-
-    if not asset_vols:
-        return {"error": "No valid assets processed."}
-
-    # ---------------------------------
-    # 2️⃣ Inverse Volatility Weights
-    # ---------------------------------
-    inv_vol_sum = sum(1 / v for v in asset_vols.values())
-
-    weights = {
-        col: (1 / asset_vols[col]) / inv_vol_sum
-        for col in asset_vols
-    }
-
-    # ---------------------------------
-    # 3️⃣ Run Strategy Per Asset
-    # ---------------------------------
-    for col, series in valid_series.items():
-
-        bt_rmse, bt_mape, bt_dir, rolling_preds = rolling_backtest(
-            series, run_arima
-        )
-
-        if rolling_preds is None or len(rolling_preds) == 0:
-            continue
-
-        split = int(len(series) * 0.8)
-
-        signals = ["HOLD"] * (len(series) - 1)
-
-        max_len = min(len(rolling_preds), len(series) - split - 1)
-
-        for i in range(max_len):
-
-            current_price = series.iloc[split + i]
-            predicted_price = rolling_preds[i]
-
-            if predicted_price > current_price:
-                signals[split + i] = "BUY"
-            else:
-                signals[split + i] = "SELL"
-
-        result = simulate_strategy(series, signals)
-
-        raw_equity = np.array(result["equity_curve"])
-
-        if len(raw_equity) == 0:
-            continue
-
-        # Normalize each asset to 1
-        normalized_equity = raw_equity / raw_equity[0]
-
-        allocated_capital = total_capital * weights[col]
-
-        scaled_equity = normalized_equity * allocated_capital
-
-        asset_results[col] = {
-            "weight": round(weights[col], 3),
-            "total_return": round(sanitize(result["total_return"]), 2),
-            "sharpe_ratio": round(sanitize(result["sharpe_ratio"]), 2),
-            "max_drawdown": round(sanitize(result["max_drawdown"]), 2)
-        }
-
-        if portfolio_equity is None:
-            portfolio_equity = scaled_equity
-        else:
-            min_len = min(len(portfolio_equity), len(scaled_equity))
-            portfolio_equity = (
-                portfolio_equity[:min_len] +
-                scaled_equity[:min_len]
-            )
-
-    if portfolio_equity is None:
-        return {"error": "No valid assets processed."}
-
-    # ---------------------------------
-    # Use Log Returns (Institutional)
-    # ---------------------------------
-    portfolio_returns = np.diff(np.log(portfolio_equity))
-
-    # ---------------------------------
-    # Volatility Targeting (20% annual)
-    # ---------------------------------
-    portfolio_vol = np.std(portfolio_returns) * np.sqrt(252)
-    target_vol = 0.20  # 20% annualized
-    if portfolio_vol > 0:
-        scaling_factor = target_vol / portfolio_vol
-    else:
-        scaling_factor = 1
-    portfolio_equity = portfolio_equity * scaling_factor
-
-    # ---------------------------------
-    # Recalculate Log Returns After Scaling
-    # ---------------------------------
-    portfolio_returns = np.diff(np.log(portfolio_equity))
+    for r in portfolio_future_returns:
+        last_equity = last_equity * (1 + r)
+        future_equity.append(last_equity)
 
     # ---------------------------------
     # Portfolio Metrics
     # ---------------------------------
     portfolio_total_return = (
-        (portfolio_equity[-1] - portfolio_equity[0]) / portfolio_equity[0]
+        (portfolio_equity.iloc[-1] - portfolio_equity.iloc[0])
+        / portfolio_equity.iloc[0]
     ) * 100
 
-    # Minimum sample protection
-    if len(portfolio_returns) < 20:
-        portfolio_sharpe = 0
-    elif np.std(portfolio_returns) != 0:
+    portfolio_sharpe = 0
+    if portfolio_returns.std() != 0:
         portfolio_sharpe = (
-            np.mean(portfolio_returns) /
-            np.std(portfolio_returns)
+            portfolio_returns.mean() /
+            portfolio_returns.std()
         ) * np.sqrt(252)
-    else:
-        portfolio_sharpe = 0
+
     portfolio_max_drawdown = (
-        np.min(
-            portfolio_equity /
-            np.maximum.accumulate(portfolio_equity) - 1
-        ) * 100
-    )
+        (portfolio_equity /
+         portfolio_equity.cummax() - 1).min()
+    ) * 100
 
     # ---------------------------------
-    # 5️⃣ Normalize Portfolio to Start at 100
+    # Individual Asset Metrics
+    # ---------------------------------
+    asset_results = {}
+
+    for col in asset_columns:
+
+        asset_ret = returns_df[col]
+        asset_equity = total_capital * (1 + asset_ret).cumprod()
+
+        asset_total_return = (
+            (asset_equity.iloc[-1] - asset_equity.iloc[0])
+            / asset_equity.iloc[0]
+        ) * 100
+
+        asset_sharpe = 0
+        if asset_ret.std() != 0:
+            asset_sharpe = (
+                asset_ret.mean() /
+                asset_ret.std()
+            ) * np.sqrt(252)
+
+        asset_max_dd = (
+            (asset_equity /
+             asset_equity.cummax() - 1).min()
+        ) * 100
+
+        asset_results[col] = {
+            "weight": round(float(weights[col]), 3),
+            "total_return": round(float(asset_total_return), 2),
+            "sharpe_ratio": round(float(asset_sharpe), 2),
+            "max_drawdown": round(float(asset_max_dd), 2)
+        }
+
+    # ---------------------------------
+    # Normalize Historical Equity
     # ---------------------------------
     normalized_portfolio_equity = (
-        portfolio_equity / portfolio_equity[0]
+        portfolio_equity / initial_equity
     ) * 100
 
     clean_equity = [
-        round(sanitize(x), 2)
-        for x in normalized_portfolio_equity
+        round(float(x), 2)
+        for x in normalized_portfolio_equity.values
     ]
 
+    # Normalize Forecast Equity
+    normalized_future_equity = [
+        round(float((x / initial_equity) * 100), 2)
+        for x in future_equity
+    ]
+
+    # ---------------------------------
+    # Final JSON Return
+    # ---------------------------------
     return {
         "assets": asset_results,
-        "portfolio_total_return": round(sanitize(portfolio_total_return), 2),
-        "portfolio_sharpe": round(sanitize(portfolio_sharpe), 2),
-        "portfolio_max_drawdown": round(sanitize(portfolio_max_drawdown), 2),
-        "portfolio_equity_curve": clean_equity
+        "weights": {
+            str(k): float(round(v * 100, 2))
+            for k, v in weights.items()
+        },
+        "portfolio_total_return": float(round(portfolio_total_return, 2)),
+        "portfolio_sharpe": float(round(portfolio_sharpe, 2)),
+        "portfolio_max_drawdown": float(round(portfolio_max_drawdown, 2)),
+        "portfolio_equity_curve": clean_equity,
+        "portfolio_forecast_curve": normalized_future_equity
     }

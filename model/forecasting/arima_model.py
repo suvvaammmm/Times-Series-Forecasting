@@ -6,20 +6,32 @@ from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.stats.diagnostic import acorr_ljungbox
 
 
-def run_arima(series, forecast_steps=10):
+def run_arima(series, forecast_steps=5):
+
+    # ---------------------------
+    # 0️⃣ Clean Series
+    # ---------------------------
+    series = series.astype(float).dropna()
+
+    # Use log transform (percentage growth modeling)
+    log_series = np.log(series)
 
     best_aic = float("inf")
     best_order = None
     best_model = None
 
     # ---------------------------
-    # 1️⃣ Grid Search
+    # 1️⃣ Grid Search with Drift
     # ---------------------------
     for p in range(0, 3):
         for d in range(0, 2):
             for q in range(0, 3):
                 try:
-                    model = ARIMA(series, order=(p, d, q))
+                    model = ARIMA(
+                        log_series,
+                        order=(p, d, q),
+                        trend="t"  # 👈 Drift added
+                    )
                     result = model.fit()
 
                     if result.aic < best_aic:
@@ -36,48 +48,38 @@ def run_arima(series, forecast_steps=10):
     print("Best ARIMA Order:", best_order)
 
     # ---------------------------
-    # 2️⃣ Forecast
+    # 2️⃣ Forecast (Log Scale)
     # ---------------------------
     forecast_result = best_model.get_forecast(steps=forecast_steps)
 
-    forecast = forecast_result.predicted_mean
-    conf_int = forecast_result.conf_int()
+    forecast_log = forecast_result.predicted_mean
+    conf_int_log = forecast_result.conf_int()
 
-    lower = conf_int.iloc[:, 0]
-    upper = conf_int.iloc[:, 1]
+    # Convert back to price scale
+    forecast = np.exp(forecast_log)
+    lower = np.exp(conf_int_log.iloc[:, 0])
+    upper = np.exp(conf_int_log.iloc[:, 1])
 
     # ---------------------------
     # 3️⃣ Residual Diagnostics
     # ---------------------------
     residuals = best_model.resid
-
-    residual_mean = np.mean(residuals)
+    residual_mean = float(np.mean(residuals))
 
     lb_test = acorr_ljungbox(residuals, lags=[10], return_df=True)
-    lb_pvalue = lb_test["lb_pvalue"].values[0]
+    lb_pvalue = float(lb_test["lb_pvalue"].values[0])
 
-    aic = best_aic  # ✅ correct AIC
+    aic = float(best_aic)
 
     # ---------------------------
     # 4️⃣ Safe Rounding
     # ---------------------------
-    forecast = np.round(forecast, 2)
-    lower = np.round(lower, 2)
-    upper = np.round(upper, 2)
+    forecast = np.round(forecast.values.astype(float), 2)
+    lower = np.round(lower.values.astype(float), 2)
+    upper = np.round(upper.values.astype(float), 2)
 
-    try:
-        aic = round(float(aic), 2)
-    except:
-        aic = 0.0
-
-    try:
-        residual_mean = round(float(residual_mean), 2)
-    except:
-        residual_mean = 0.0
-
-    try:
-        lb_pvalue = round(float(lb_pvalue), 2)
-    except:
-        lb_pvalue = 0.0
+    aic = round(aic, 2)
+    residual_mean = round(residual_mean, 4)
+    lb_pvalue = round(lb_pvalue, 4)
 
     return forecast, lower, upper, aic, residual_mean, lb_pvalue

@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify
 import pandas as pd
 import numpy as np
 import math
+import traceback
 
 from model.anomaly.detect import detect_anomalies
 from portfolio.portfolio_engine import run_portfolio_from_csv
@@ -9,14 +10,13 @@ from model.backtest.backtest import rolling_backtest
 from model.forecasting.arima_model import run_arima
 from model.forecasting.sarima_model import run_sarima
 from model.forecasting.auto_selector import select_best_model
-#from services.angel_service import get_angel_data
 
 app = Flask(__name__)
 
 
-# --------------------------------------------------
-# Utility: Safe JSON Number Conversion
-# --------------------------------------------------
+# -----------------------------------------
+# Safe JSON Conversion
+# -----------------------------------------
 def safe(x):
     if x is None:
         return 0.0
@@ -32,7 +32,7 @@ def home():
 
 
 # ======================================================
-# 🔹 MULTI ASSET (CSV)
+# MULTI ASSET
 # ======================================================
 @app.route("/predict_multi_csv", methods=["POST"])
 def predict_multi_csv():
@@ -43,9 +43,6 @@ def predict_multi_csv():
         file = request.files["file"]
         results = run_portfolio_from_csv(file)
 
-        if not isinstance(results, dict):
-            return jsonify({"error": "Invalid portfolio result format"}), 500
-
         return jsonify(results)
 
     except Exception as e:
@@ -54,57 +51,41 @@ def predict_multi_csv():
 
 
 # ======================================================
-# 🔹 SINGLE ASSET FORECAST
+# SINGLE ASSET
 # ======================================================
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         data_source = request.form.get("data_source")
         model_type = request.form.get("model_type")
-        threshold = request.form.get("threshold")
-
-        if threshold is None:
-            return jsonify({"error": "Threshold value required"}), 400
-
-        threshold = float(threshold)
+        threshold = float(request.form.get("threshold", 1.5))
 
         # ---------------------------
-        # 1️⃣ LOAD DATA
+        # Load Data
         # ---------------------------
         if data_source == "file":
-
             if "file" not in request.files:
                 return jsonify({"error": "CSV file required"}), 400
-
             file = request.files["file"]
             df = pd.read_csv(file)
-
             if "value" not in df.columns:
                 return jsonify({"error": "CSV must contain 'value' column"}), 400
-
             series = pd.to_numeric(df["value"], errors="coerce").dropna()
-            df = pd.DataFrame({"value": series})
-
-        #elif data_source == "angel":
-
-            #symbol_token = request.form.get("symbol_token")
-
-            #if not symbol_token:
-                #return jsonify({"error": "Symbol token required"}), 400
-
-            #series = get_angel_data(symbol_token)
-
-            if series is None or len(series) == 0:
-                return jsonify({"error": "No data returned from Angel API"}), 400
-
-            series = pd.Series(series)
-            df = pd.DataFrame({"value": series})
-
+            series = series.reset_index(drop=True)
+        elif data_source == "angel":
+            from services.angel_service import get_angel_data
+            symbol_token = request.form.get("symbol_token")
+            if not symbol_token:
+                return jsonify({"error": "Symbol token required"}), 400
+            series,company_name = get_angel_data(symbol_token)
+            if series is None or len(series)==0:
+                return jsonify({"error" : "No data returned from Angel API" }), 400
+            series = pd.Series(series).reset_index(drop=True)
         else:
-            return jsonify({"error": "Invalid data source"}), 400
-
+            return jsonify({"error" : "Invalid data source"}), 400
+        df = pd.DataFrame({"value": series})
         # ---------------------------
-        # 2️⃣ MODEL SELECTION
+        # Model Selection
         # ---------------------------
         if model_type == "ARIMA":
             forecast, lower, upper, aic, residual_mean, lb_pvalue = run_arima(series)
@@ -115,46 +96,42 @@ def predict():
             selected_model = "SARIMA"
 
         elif model_type == "AUTO":
-
-            if len(series) < 20:
-                forecast, lower, upper, aic, residual_mean, lb_pvalue = run_arima(series)
-                selected_model = "ARIMA (Insufficient data)"
-            else:
-                best_model, best_data = select_best_model(series)
-
-                forecast = best_data["forecast"]
-                lower = best_data["lower"]
-                upper = best_data["upper"]
-                aic = best_data["aic"]
-                residual_mean = best_data["residual_mean"]
-                lb_pvalue = best_data["lb_pvalue"]
-
-                selected_model = best_model + " (Composite Score)"
+            best_model, best_data = select_best_model(series)
+            forecast = best_data["forecast"]
+            lower = best_data["lower"]
+            upper = best_data["upper"]
+            aic = best_data["aic"]
+            residual_mean = best_data["residual_mean"]
+            lb_pvalue = best_data["lb_pvalue"]
+            selected_model = best_model + " (AUTO)"
 
         else:
             return jsonify({"error": "Invalid model type"}), 400
 
+        # Ensure numpy-safe lists
+        forecast = list(np.array(forecast).flatten())
+        lower = list(np.array(lower).flatten())
+        upper = list(np.array(upper).flatten())
+
         # ---------------------------
-        # 3️⃣ BACKTEST
+        # Backtest
         # ---------------------------
-        if selected_model.startswith("ARIMA"):
+        if "ARIMA" in selected_model:
             bt_rmse, bt_mape, bt_dir, rolling_preds = rolling_backtest(series, run_arima)
         else:
             bt_rmse, bt_mape, bt_dir, rolling_preds = rolling_backtest(series, run_sarima)
 
         # ---------------------------
-        # 4️⃣ STRATEGY SIMULATION
+        # Strategy Simulation
         # ---------------------------
-        returns = []
-        equity = []
-
         split = int(len(series) * 0.8)
-        transaction_cost = 0.001
         starting_capital = 100000
         capital = starting_capital
+        transaction_cost = 0.001
         risk_per_trade = 0.02
 
-        equity.append(capital)
+        equity = [capital]
+        returns = []
 
         if rolling_preds is not None:
             max_index = min(len(rolling_preds), len(series) - split - 1)
@@ -173,65 +150,61 @@ def predict():
                     r = 0
 
                 position_size = capital * risk_per_trade
-                pnl = position_size * r
+                capital += position_size * r
 
-                capital += pnl
                 equity.append(capital)
                 returns.append(r)
 
         equity = np.array(equity)
-        returns_array = np.array(returns)
+        returns = np.array(returns)
 
         strategy_total_return = ((capital - starting_capital) / starting_capital) * 100
-
-        # Annualized Return
-        periods = len(returns_array)
-        if periods > 0:
-            strategy_annualized_return = (
-                (capital / starting_capital) ** (252 / periods) - 1
-            ) * 100
+        num_days = len(series)
+        if num_days > 0:
+            strategy_annualized_return = ((capital / starting_capital) ** (252 / num_days) - 1) * 100
         else:
-            strategy_annualized_return = 0.0
-
-        # Sharpe
-        if len(returns_array) > 1 and np.std(returns_array) != 0:
-            sharpe_ratio = (np.mean(returns_array) / np.std(returns_array)) * np.sqrt(252)
+            strategy_annualized_return=0
+        if len(returns) > 0:
+            wins=np.sum(returns > 0)
+            strategy_win_rate = (wins / len(returns)) * 100
         else:
-            sharpe_ratio = 0.0
+            strategy_win_rate = 0
 
-        strategy_win_rate = np.mean(returns_array > 0) * 100 if len(returns_array) > 0 else 0.0
+        strategy_sharpe = 0
+        if len(returns) > 1 and np.std(returns) != 0:
+            strategy_sharpe = (np.mean(returns) / np.std(returns)) * np.sqrt(252)
 
-        strategy_max_drawdown = (
+        strategy_max_dd = (
             np.min(equity / np.maximum.accumulate(equity) - 1) * 100
-            if len(equity) > 1 else 0.0
+            if len(equity) > 1 else 0
         )
 
-        buy_hold_return = ((series.iloc[-1] - series.iloc[split]) / series.iloc[split]) * 100
+        buy_hold_return = (
+            (series.iloc[-1] - series.iloc[split]) / series.iloc[split]
+        ) * 100
 
         # ---------------------------
-        # 5️⃣ SIGNAL ENGINE
+        # Signal Engine
         # ---------------------------
         current_price = series.iloc[-1]
         forecast_mean = np.mean(forecast[:3])
 
-        lower_first = lower.iloc[0]
-        upper_first = upper.iloc[0]
+        lower_first = lower[0]
+        upper_first = upper[0]
 
         expected_return = (forecast_mean - current_price) / current_price
-        volatility_regime = series.pct_change().rolling(20).std().iloc[-1]
-        if volatility_regime > 0.03:
+
+        volatility = series.pct_change().rolling(20).std().iloc[-1]
+        regime = "NORMAL"
+        if volatility > 0.03:
             regime = "HIGH VOLATILITY"
-        elif volatility_regime < 0.01:
+        elif volatility < 0.01:
             regime = "LOW VOLATILITY"
-        else:
-            regime : "NORMAL"
-        
+
         ci_width = upper_first - lower_first
-        confidence_score = 1 - (ci_width / current_price)
-        confidence_score = max(0, min(confidence_score, 1))
+        confidence_score = max(0, min(1, 1 - (ci_width / current_price)))
 
         signal = "HOLD"
-
         if confidence_score > 0.4:
             if expected_return > 0 and lower_first > current_price:
                 signal = "BUY"
@@ -239,50 +212,54 @@ def predict():
                 signal = "SELL"
 
         # ---------------------------
-        # 6️⃣ ANOMALY
+        # Anomaly
         # ---------------------------
         predictions, anomalies, mae, rmse = detect_anomalies(df, threshold)
 
         anomaly_points = [
-            df["value"].iloc[i] if anomalies[i] else None
+            float(df["value"].iloc[i]) if anomalies[i] else None
             for i in range(len(anomalies))
         ]
 
         # ---------------------------
-        # 7️⃣ RESPONSE
+        # Final JSON
         # ---------------------------
         return jsonify({
-            "actual": [safe(x) for x in df["value"]],
-            "predicted": [safe(x) for x in predictions],
-            "forecast": [safe(x) for x in forecast],
-            "lower_ci": [safe(x) for x in lower],
-            "upper_ci": [safe(x) for x in upper],
+            "actual": list(map(float, df["value"])),
+            "predicted": list(map(float, predictions)),
+            "forecast": list(map(float, forecast)),
+            "lower_ci": list(map(float, lower)),
+            "upper_ci": list(map(float, upper)),
             "selected_model": selected_model,
             "aic": round(safe(aic), 3),
             "residual_mean": round(safe(residual_mean), 3),
             "ljung_box_pvalue": round(safe(lb_pvalue), 3),
             "signal": signal,
-            "market regime": regime,
+            "market_regime": regime,
             "expected_return": round(safe(expected_return * 100), 3),
             "confidence_score": round(safe(confidence_score), 3),
-            "anomaly_points": [safe(x) if x is not None else None for x in anomaly_points],
+            "anomaly_points": [
+                float(x) if x is not None else None 
+                for x in anomaly_points
+            ],
             "anomaly_count": int(sum(anomalies)),
             "mae": round(safe(mae), 3),
             "rmse": round(safe(rmse), 3),
-            "backtest_rmse": round(safe(bt_rmse), 3) if bt_rmse else None,
-            "backtest_mape": round(safe(bt_mape), 3) if bt_mape else None,
-            "backtest_direction_accuracy": round(safe(bt_dir), 3) if bt_dir else None,
+            "backtest_rmse": round(safe(bt_rmse), 3) if bt_rmse is not None else None,
+            "backtest_mape": round(safe(bt_mape), 3) if bt_mape is not None else None,
+            "backtest_direction_accuracy": round(safe(bt_dir), 3) if bt_dir is not None else None,
             "strategy_total_return": round(strategy_total_return, 3),
             "strategy_annualized_return": round(strategy_annualized_return, 3),
-            "strategy_sharpe_ratio": round(sharpe_ratio, 3),
-            "strategy_win_rate": round(strategy_win_rate, 3),
-            "strategy_max_drawdown": round(strategy_max_drawdown, 3),
+            "strategy_win_rate":round(strategy_win_rate, 3),
+            "strategy_sharpe_ratio": round(strategy_sharpe, 3),
+            "strategy_max_drawdown": round(strategy_max_dd, 3),
+            "company_name" : company_name if data_source == "angel" else "Uploaded CSV",
             "buy_hold_return": round(buy_hold_return, 3),
-            "equity_curve": [round(float(x), 3) for x in equity]
+            "equity_curve": list(map(float, equity))
         })
 
     except Exception as e:
-        print("SINGLE ERROR:", e)
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
