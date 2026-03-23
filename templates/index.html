@@ -1159,7 +1159,7 @@ function renderSingle(data){
   document.getElementById('btRmse').textContent=fmt(data.backtest_rmse,4);
   document.getElementById('btMape').textContent=fmt(data.backtest_mape,4)+'%';
   document.getElementById('btDir').textContent=
-    data.backtest_direction_accuracy!=null?(parseFloat(data.backtest_direction_accuracy)*100).toFixed(1)+'%':'—';
+    data.backtest_direction_accuracy!=null?parseFloat(data.backtest_direction_accuracy).toFixed(1)+'%':'—';
 }
 
 function renderForecastChart(data){
