@@ -1046,16 +1046,63 @@ Chart.defaults.font={family:"'IBM Plex Mono',monospace",size:10};
 Chart.defaults.color='#7A7668';
 
 const gridCfg={color:'rgba(216,211,196,0.7)',lineWidth:0.5};
+
+// ── CROSSHAIR PLUGIN ─────────────────────────────────
+const crosshairPlugin = {
+  id: 'crosshair',
+  afterDraw(chart) {
+    if (!chart._crosshairX) return;
+    const {ctx, chartArea: {top, bottom}} = chart;
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(chart._crosshairX, top);
+    ctx.lineTo(chart._crosshairX, bottom);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(200,146,42,0.5)';
+    ctx.setLineDash([4,3]);
+    ctx.stroke();
+    ctx.restore();
+  }
+};
+Chart.register(crosshairPlugin);
+
+function addCrosshair(chart) {
+  chart.canvas.addEventListener('mousemove', e => {
+    const rect = chart.canvas.getBoundingClientRect();
+    chart._crosshairX = e.clientX - rect.left;
+    chart.draw();
+  });
+  chart.canvas.addEventListener('mouseleave', () => {
+    chart._crosshairX = null;
+    chart.draw();
+  });
+}
+
 const tooltipCfg={
   backgroundColor:'#1A1710',
-  borderColor:'rgba(200,146,42,0.3)',borderWidth:1,
-  titleColor:'#FAF7F0',bodyColor:'#7A7668',
-  padding:10,cornerRadius:0,
+  borderColor:'rgba(200,146,42,0.5)',borderWidth:1,
+  titleColor:'#C8922A',bodyColor:'#D8D3C4',
+  padding:12,cornerRadius:0,
+  displayColors:true,
+  boxWidth:10, boxHeight:10,
   callbacks:{
-    label:c=>{
-      if(c.raw===null)return null;
-      const v=c.raw, s=c.dataset.label+': ';
-      return s+numFmt(v);
+    title: items => {
+      if(!items.length) return '';
+      return `◈ Point ${items[0].label}`;
+    },
+    label: c => {
+      if(c.raw===null || c.raw===undefined) return null;
+      const v = c.raw;
+      const label = c.dataset.label;
+      const idx = c.dataIndex;
+      return `  ${label}: ${numFmt(v)}  [x:${idx+1}, y:${numFmt(v)}]`;
+    },
+    afterBody: items => {
+      const validItems = items.filter(i => i.raw !== null && i.raw !== undefined);
+      if(validItems.length < 2) return '';
+      const vals = validItems.map(i => parseFloat(i.raw)).filter(v => !isNaN(v));
+      const min = Math.min(...vals), max = Math.max(...vals);
+      return [``, `  Range: ${numFmt(min)} → ${numFmt(max)}`];
     }
   }
 };
@@ -1169,17 +1216,68 @@ function renderForecastChart(data){
   const labels=Array.from({length:aLen+fLen},(_,i)=>i+1);
   const padE=(a,n)=>[...a,...Array(n).fill(null)];
 
+  // Adaptive point radius: show all points but smaller for large datasets
+  const totalPts = aLen + fLen;
+  const ptR = totalPts > 200 ? 1.5 : totalPts > 100 ? 2 : 3;
+  const ptHR = ptR + 3;
+
   fcInst=new Chart(ctx,{
     type:'line',
     data:{
       labels,
       datasets:[
-        {label:'Actual',data:padE(data.actual,fLen),borderColor:'#1A1710',borderWidth:1.5,pointRadius:0,tension:0.1,fill:false,order:1},
-        {label:'Predicted',data:padE(data.predicted,fLen),borderColor:'#1B3D6E',borderWidth:1.5,borderDash:[4,4],pointRadius:0,tension:0.1,fill:false,order:2},
-        {label:'Forecast',data:[...Array(aLen-1).fill(null),data.actual[aLen-1],...data.forecast],borderColor:'#C8922A',borderWidth:2,borderDash:[6,4],pointRadius:0,tension:0.1,fill:false,order:3},
-        {label:'Upper CI',data:[...Array(aLen).fill(null),...data.upper_ci],borderColor:'rgba(200,146,42,0.2)',backgroundColor:'rgba(200,146,42,0.06)',borderWidth:1,pointRadius:0,fill:false,tension:0.1,order:5},
-        {label:'Lower CI',data:[...Array(aLen).fill(null),...data.lower_ci],borderColor:'rgba(200,146,42,0.2)',backgroundColor:'rgba(200,146,42,0.06)',borderWidth:1,pointRadius:0,fill:'-1',tension:0.1,order:5},
-        {label:'Anomaly',data:padE(data.anomaly_points,fLen),borderColor:'#C0392B',backgroundColor:'#C0392B',pointRadius:5,pointHoverRadius:8,pointStyle:'crossRot',showLine:false,order:0}
+        {
+          label:'Actual',
+          data:padE(data.actual,fLen),
+          borderColor:'#1A1710',borderWidth:1.5,
+          pointRadius:ptR,pointHoverRadius:ptHR,
+          pointBackgroundColor:'#1A1710',
+          pointBorderColor:'#FAF7F0',pointBorderWidth:1,
+          tension:0.1,fill:false,order:1
+        },
+        {
+          label:'Predicted',
+          data:padE(data.predicted,fLen),
+          borderColor:'#1B3D6E',borderWidth:1.5,borderDash:[4,4],
+          pointRadius:ptR,pointHoverRadius:ptHR,
+          pointBackgroundColor:'#1B3D6E',
+          pointBorderColor:'#FAF7F0',pointBorderWidth:1,
+          tension:0.1,fill:false,order:2
+        },
+        {
+          label:'Forecast',
+          data:[...Array(aLen-1).fill(null),data.actual[aLen-1],...data.forecast],
+          borderColor:'#C8922A',borderWidth:2,borderDash:[6,4],
+          pointRadius:ptR+1,pointHoverRadius:ptHR+1,
+          pointBackgroundColor:'#C8922A',
+          pointBorderColor:'#FAF7F0',pointBorderWidth:1,
+          tension:0.1,fill:false,order:3
+        },
+        {
+          label:'Upper CI',
+          data:[...Array(aLen).fill(null),...data.upper_ci],
+          borderColor:'rgba(200,146,42,0.35)',backgroundColor:'rgba(200,146,42,0.07)',
+          borderWidth:1,
+          pointRadius:ptR-0.5,pointHoverRadius:ptHR-1,
+          pointBackgroundColor:'rgba(200,146,42,0.5)',
+          fill:false,tension:0.1,order:5
+        },
+        {
+          label:'Lower CI',
+          data:[...Array(aLen).fill(null),...data.lower_ci],
+          borderColor:'rgba(200,146,42,0.35)',backgroundColor:'rgba(200,146,42,0.07)',
+          borderWidth:1,
+          pointRadius:ptR-0.5,pointHoverRadius:ptHR-1,
+          pointBackgroundColor:'rgba(200,146,42,0.5)',
+          fill:'-1',tension:0.1,order:5
+        },
+        {
+          label:'Anomaly',
+          data:padE(data.anomaly_points,fLen),
+          borderColor:'#C0392B',backgroundColor:'#C0392B',
+          pointRadius:7,pointHoverRadius:10,
+          pointStyle:'crossRot',showLine:false,order:0
+        }
       ]
     },
     options:{
@@ -1188,21 +1286,60 @@ function renderForecastChart(data){
       plugins:{
         legend:{
           position:'top',align:'end',
-          labels:{usePointStyle:true,pointStyle:'line',padding:16,font:{size:10,family:"'IBM Plex Mono',monospace"}}
+          labels:{usePointStyle:true,pointStyle:'circle',padding:16,font:{size:10,family:"'IBM Plex Mono',monospace"}}
         },
-        tooltip:tooltipCfg
+        tooltip:{
+          ...tooltipCfg,
+          callbacks:{
+            ...tooltipCfg.callbacks,
+            title: items => {
+              if(!items.length) return '';
+              const idx = items[0].dataIndex;
+              const isForecasted = idx >= aLen;
+              return `◈ ${isForecasted ? 'Forecast' : 'Historical'} · Point ${idx+1}`;
+            },
+            afterBody: items => {
+              const validItems = items.filter(i => i.raw !== null && i.raw !== undefined);
+              if(validItems.length < 2) return '';
+              const vals = validItems.map(i => parseFloat(i.raw)).filter(v => !isNaN(v));
+              const min = Math.min(...vals), max = Math.max(...vals);
+              const actualVal = items.find(i => i.dataset.label === 'Actual' && i.raw !== null);
+              const predVal = items.find(i => i.dataset.label === 'Predicted' && i.raw !== null);
+              const lines = [``, `  Spread: ${numFmt(min)} → ${numFmt(max)}`];
+              if(actualVal && predVal) {
+                const err = Math.abs(parseFloat(actualVal.raw) - parseFloat(predVal.raw));
+                lines.push(`  Prediction Error: ${numFmt(err)}`);
+              }
+              return lines;
+            }
+          }
+        }
       },
       scales:{
-        x:{grid:gridCfg,ticks:{maxTicksLimit:10}},
-        y:{grid:gridCfg,ticks:{callback:v=>numFmt(v)}}
+        x:{
+          grid:gridCfg,
+          ticks:{
+            maxTicksLimit:totalPts > 100 ? 12 : totalPts,
+            callback:(v,i)=>i+1
+          },
+          title:{display:true,text:'Time Index',color:'#7A7668',font:{size:10,family:"'IBM Plex Mono',monospace"}}
+        },
+        y:{
+          grid:gridCfg,
+          ticks:{callback:v=>numFmt(v)},
+          title:{display:true,text:'Value',color:'#7A7668',font:{size:10,family:"'IBM Plex Mono',monospace"}}
+        }
       }
     }
   });
+  addCrosshair(fcInst);
 }
 
 function renderEquityChart(equity){
   kill(eqInst);
   const ctx=document.getElementById('equityChart').getContext('2d');
+  const ptR = equity.length > 200 ? 1.5 : equity.length > 100 ? 2 : 3;
+
   eqInst=new Chart(ctx,{
     type:'line',
     data:{
@@ -1212,14 +1349,17 @@ function renderEquityChart(equity){
         data:equity,
         borderColor:'#1E6B3C',
         borderWidth:2,
-        pointRadius:0,
+        pointRadius:ptR,
+        pointHoverRadius:ptR+4,
+        pointBackgroundColor:'#1E6B3C',
+        pointBorderColor:'#FAF7F0',pointBorderWidth:1,
         tension:0.2,
         fill:true,
         backgroundColor:c=>{
           const {ctx:cv,chartArea:ca}=c.chart;
           if(!ca)return'transparent';
           const g=cv.createLinearGradient(0,ca.top,0,ca.bottom);
-          g.addColorStop(0,'rgba(30,107,60,0.12)');
+          g.addColorStop(0,'rgba(30,107,60,0.14)');
           g.addColorStop(1,'rgba(30,107,60,0)');
           return g;
         }
@@ -1227,16 +1367,57 @@ function renderEquityChart(equity){
     },
     options:{
       responsive:true,maintainAspectRatio:true,
+      interaction:{mode:'index',intersect:false},
       plugins:{
         legend:{display:false},
-        tooltip:{...tooltipCfg,callbacks:{label:c=>'₹'+c.raw.toLocaleString('en-IN',{maximumFractionDigits:0})}}
+        tooltip:{
+          ...tooltipCfg,
+          callbacks:{
+            title: items => {
+              if(!items.length) return '';
+              return `◈ Trade ${items[0].label}`;
+            },
+            label: c => {
+              if(c.raw===null) return null;
+              const v = parseFloat(c.raw);
+              const idx = c.dataIndex;
+              const prev = idx > 0 ? parseFloat(equity[idx-1]) : v;
+              const chg = v - prev;
+              const chgPct = ((chg/prev)*100).toFixed(2);
+              return [
+                `  Equity: ₹${v.toLocaleString('en-IN',{maximumFractionDigits:0})}`,
+                `  Point: [x:${idx+1}, y:${numFmt(v)}]`,
+                `  Change: ${chg>=0?'+':''}${numFmt(chg)} (${chg>=0?'+':''}${chgPct}%)`
+              ];
+            },
+            afterBody: items => {
+              if(!items.length) return '';
+              const idx = items[0].dataIndex;
+              const start = parseFloat(equity[0]);
+              const curr = parseFloat(equity[idx]);
+              const totalChg = ((curr - start)/start*100).toFixed(2);
+              const peak = Math.max(...equity.slice(0, idx+1));
+              const dd = ((curr - peak)/peak*100).toFixed(2);
+              return [``, `  Total P&L: ${totalChg>=0?'+':''}${totalChg}%`, `  Drawdown from Peak: ${dd}%`];
+            }
+          }
+        }
       },
       scales:{
-        x:{grid:gridCfg,ticks:{maxTicksLimit:8}},
-        y:{grid:gridCfg,ticks:{callback:v=>numFmt(v)}}
+        x:{
+          grid:gridCfg,
+          ticks:{maxTicksLimit: equity.length > 100 ? 10 : equity.length, callback:(v,i)=>i+1},
+          title:{display:true,text:'Trade #',color:'#7A7668',font:{size:10}}
+        },
+        y:{
+          grid:gridCfg,
+          ticks:{callback:v=>'₹'+numFmt(v)},
+          title:{display:true,text:'Portfolio Value',color:'#7A7668',font:{size:10}}
+        }
       }
     }
   });
+  addCrosshair(eqInst);
 }
 
 // ── PORTFOLIO ──────────────────────────────────────────
@@ -1278,32 +1459,89 @@ function renderPortfolio(data){
 
     kill(portInst);
     const ctx=document.getElementById('portfolioChart').getContext('2d');
+    const totalLen = hist.length + fore.length;
+    const ptR = totalLen > 200 ? 1.5 : totalLen > 100 ? 2 : 3;
+
     portInst=new Chart(ctx,{
       type:'line',
       data:{
         labels,
         datasets:[
-          {label:'Portfolio Equity',data:ph,borderColor:'#1A1710',borderWidth:2,pointRadius:0,tension:0.2,fill:true,
-           backgroundColor:c=>{
-            const {ctx:cv,chartArea:ca}=c.chart;if(!ca)return'transparent';
-            const g=cv.createLinearGradient(0,ca.top,0,ca.bottom);
-            g.addColorStop(0,'rgba(26,23,16,0.08)');g.addColorStop(1,'rgba(26,23,16,0)');return g;
-           }},
-          {label:'Forecast',data:pf,borderColor:'#C8922A',borderWidth:2,borderDash:[6,4],pointRadius:0,tension:0.2,fill:false}
+          {
+            label:'Portfolio Equity',data:ph,
+            borderColor:'#1A1710',borderWidth:2,
+            pointRadius:ptR,pointHoverRadius:ptR+4,
+            pointBackgroundColor:'#1A1710',
+            pointBorderColor:'#FAF7F0',pointBorderWidth:1,
+            tension:0.2,fill:true,
+            backgroundColor:c=>{
+              const {ctx:cv,chartArea:ca}=c.chart;if(!ca)return'transparent';
+              const g=cv.createLinearGradient(0,ca.top,0,ca.bottom);
+              g.addColorStop(0,'rgba(26,23,16,0.10)');g.addColorStop(1,'rgba(26,23,16,0)');return g;
+            }
+          },
+          {
+            label:'Forecast',data:pf,
+            borderColor:'#C8922A',borderWidth:2,borderDash:[6,4],
+            pointRadius:ptR,pointHoverRadius:ptR+4,
+            pointBackgroundColor:'#C8922A',
+            pointBorderColor:'#FAF7F0',pointBorderWidth:1,
+            tension:0.2,fill:false
+          }
         ]
       },
       options:{
         responsive:true,maintainAspectRatio:true,
+        interaction:{mode:'index',intersect:false},
         plugins:{
           legend:{position:'top',align:'end',labels:{usePointStyle:true,padding:14,font:{size:10}}},
-          tooltip:tooltipCfg
+          tooltip:{
+            ...tooltipCfg,
+            callbacks:{
+              title: items => {
+                if(!items.length) return '';
+                const idx = items[0].dataIndex;
+                const isFC = idx >= hist.length;
+                return `◈ ${isFC?'Forecast':'Historical'} · Point ${idx+1}`;
+              },
+              label: c => {
+                if(c.raw===null || c.raw===undefined) return null;
+                const v = parseFloat(c.raw);
+                const idx = c.dataIndex;
+                return [
+                  `  ${c.dataset.label}: ${numFmt(v)}`,
+                  `  Coordinates: [x:${idx+1}, y:${numFmt(v)}]`
+                ];
+              },
+              afterBody: items => {
+                const validItems = items.filter(i => i.raw !== null && i.raw !== undefined);
+                if(!validItems.length) return '';
+                const histItem = validItems.find(i => i.dataset.label === 'Portfolio Equity');
+                if(!histItem) return '';
+                const idx = histItem.dataIndex;
+                const start = parseFloat(hist[0]);
+                const curr = parseFloat(histItem.raw);
+                const totalChg = ((curr - start)/start*100).toFixed(2);
+                return [``, `  Cumulative Return: ${totalChg>=0?'+':''}${totalChg}%`];
+              }
+            }
+          }
         },
         scales:{
-          x:{grid:gridCfg,ticks:{maxTicksLimit:10}},
-          y:{grid:gridCfg,ticks:{callback:v=>numFmt(v)}}
+          x:{
+            grid:gridCfg,
+            ticks:{maxTicksLimit:totalLen > 100 ? 12 : totalLen, callback:(v,i)=>i+1},
+            title:{display:true,text:'Time Index',color:'#7A7668',font:{size:10}}
+          },
+          y:{
+            grid:gridCfg,
+            ticks:{callback:v=>numFmt(v)},
+            title:{display:true,text:'Portfolio Value',color:'#7A7668',font:{size:10}}
+          }
         }
       }
     });
+    addCrosshair(portInst);
   }
 
   if(data.assets){
