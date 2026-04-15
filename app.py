@@ -10,6 +10,7 @@ from model.backtest.backtest import rolling_backtest
 from model.forecasting.arima_model import run_arima
 from model.forecasting.sarima_model import run_sarima
 from model.forecasting.ridge_model import run_ridge
+from model.forecasting.ets_model import run_ets
 from model.forecasting.auto_selector import select_best_model
 
 app = Flask(__name__)
@@ -99,6 +100,10 @@ def predict():
         elif model_type == "Ridge":
             forecast, lower, upper, aic, residual_mean, lb_pvalue = run_ridge(series)
             selected_model = "Ridge"
+
+        elif model_type == "ETS":
+            forecast, lower, upper, aic, residual_mean, lb_pvalue = run_ets(series)
+            selected_model = "ETS"
 
         elif model_type == "AUTO":
             best_model, best_data = select_best_model(series)
