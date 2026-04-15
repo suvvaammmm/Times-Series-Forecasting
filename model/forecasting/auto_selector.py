@@ -1,6 +1,7 @@
 import numpy as np
 from model.forecasting.arima_model import run_arima
 from model.forecasting.sarima_model import run_sarima
+from model.forecasting.ridge_model import run_ridge
 from model.backtest.backtest import rolling_backtest
 
 
@@ -45,6 +46,25 @@ def select_best_model(series):
         "mape": mape2,
         "direction": dir2
     }
+
+    # Ridge Regression
+    try:
+        f3, l3, u3, aic3, res3, lb3 = run_ridge(series)
+        rmse3, mape3, dir3, _ = rolling_backtest(series, run_ridge)
+
+        results["Ridge"] = {
+            "forecast": f3,
+            "lower": l3,
+            "upper": u3,
+            "aic": aic3,
+            "residual_mean": res3,
+            "lb_pvalue": lb3,
+            "rmse": rmse3,
+            "mape": mape3,
+            "direction": dir3
+        }
+    except Exception as e:
+        print("Ridge skipped:", e)
 
     # Remove models that failed
     results = {k: v for k, v in results.items() if v["rmse"] is not None}

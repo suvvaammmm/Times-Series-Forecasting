@@ -9,6 +9,7 @@ from portfolio.portfolio_engine import run_portfolio_from_csv
 from model.backtest.backtest import rolling_backtest
 from model.forecasting.arima_model import run_arima
 from model.forecasting.sarima_model import run_sarima
+from model.forecasting.ridge_model import run_ridge
 from model.forecasting.auto_selector import select_best_model
 
 app = Flask(__name__)
@@ -95,6 +96,10 @@ def predict():
             forecast, lower, upper, aic, residual_mean, lb_pvalue = run_sarima(series)
             selected_model = "SARIMA"
 
+        elif model_type == "Ridge":
+            forecast, lower, upper, aic, residual_mean, lb_pvalue = run_ridge(series)
+            selected_model = "Ridge"
+
         elif model_type == "AUTO":
             best_model, best_data = select_best_model(series)
             forecast = best_data["forecast"]
@@ -118,6 +123,8 @@ def predict():
         # ---------------------------
         if "ARIMA" in selected_model:
             bt_rmse, bt_mape, bt_dir, rolling_preds = rolling_backtest(series, run_arima)
+        elif "Ridge" in selected_model:
+            bt_rmse, bt_mape, bt_dir, rolling_preds = rolling_backtest(series, run_ridge)
         else:
             bt_rmse, bt_mape, bt_dir, rolling_preds = rolling_backtest(series, run_sarima)
 
