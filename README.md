@@ -141,7 +141,3 @@ This project currently runs locally only and has **not been deployed**. A `rende
   web: gunicorn app:app --timeout 120 --workers 1 --bind 0.0.0.0:$PORT
   ```
 - When you do deploy, set the Angel One credentials (`API_KEY`, `CLIENT_ID`, `PASSWORD`, `TOTP_SECRET`) as environment variables on the host rather than committing them in `.env`.
-
-## Disclaimer
-
-This project is for educational/research purposes. Forecasts, signals, and simulated strategy returns are not investment advice and do not guarantee future performance.
